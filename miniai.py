@@ -63,7 +63,7 @@ DEFAULT_CONFIG = {
     "provider": "claude",
     "models": dict(DEFAULT_MODELS),
     "keys": {"claude": "", "openai": "", "gemini": ""},
-    "max_tokens": 1024,
+    "max_tokens": 4096,
     "timeout": 120,
     "warn_ratio": 0.75,  # avisa cuando el contexto supera este % del limite
     "stream": True,      # imprime la respuesta a medida que llega
@@ -149,6 +149,31 @@ def context_limit(model):
 
 def fmt(n):
     return "{:,}".format(int(n)).replace(",", ".")
+
+def stdin_pending(wait):
+    """True si ya hay mas entrada esperando en stdin.
+
+    Justo despues de un Enter, solo un pegado multilinea deja datos ya
+    disponibles; una persona tipeando no llega en esa ventana tan corta.
+    Solo tiene sentido con stdin interactivo (TTY)."""
+    if not sys.stdin.isatty():
+        return False
+    if os.name == "nt":
+        import msvcrt
+        end = time.time() + wait
+        while True:
+            if msvcrt.kbhit():
+                return True
+            if time.time() >= end:
+                return False
+            time.sleep(0.005)
+    else:
+        import select
+        try:
+            r, _, _ = select.select([sys.stdin], [], [], wait)
+        except (OSError, ValueError):
+            return False
+        return bool(r)
 
 def warn(msg):
     print(C.yellow("! " + msg), file=sys.stderr)
@@ -500,6 +525,7 @@ HELP = """Comandos:
   /clear               vaciar los mensajes del chat actual
   /trim <n>            conservar solo los ultimos n mensajes
   /system [texto]      ver o fijar el prompt de sistema del chat
+  /paste               escribir/pegar un mensaje multilinea (termina con . sola)
   /provider <nombre>   cambiar proveedor: claude | openai | gemini
   /model [nombre]      ver o cambiar el modelo del chat actual
   /max <n>             fijar max_tokens de respuesta
@@ -510,7 +536,8 @@ HELP = """Comandos:
   /help                esta ayuda
   /quit                salir
 
-Cualquier otra linea se envia como mensaje al chat actual.
+Cualquier otra linea se envia como mensaje al chat actual. Si pegas varias
+lineas de una vez, se juntan y se envian como un solo mensaje.
 Consejo: vigila /status para que la ventana de contexto no crezca de mas."""
 
 
@@ -686,6 +713,8 @@ class App:
             self.trim(arg)
         elif name == "system":
             self.system_cmd(arg)
+        elif name == "paste":
+            self.paste_mode()
         elif name in ("provider", "prov"):
             self.set_provider(arg)
         elif name == "model":
@@ -780,6 +809,30 @@ class App:
         else:
             s = self.chat.system
             print(C.dim("Sistema: ") + (s if s else C.dim("(vacio)")))
+
+    def paste_mode(self):
+        if not self.require_chat():
+            return
+        print(C.dim("Modo multilinea: escribi o pega el texto. Termina con una "
+                    "linea que tenga solo un punto (.) o con Ctrl-D."))
+        lines = []
+        while True:
+            try:
+                l = input()
+            except EOFError:
+                print()
+                break
+            if l.strip() == ".":
+                break
+            lines.append(l)
+        text = "\n".join(lines).strip()
+        if not text:
+            print(C.dim("(nada que enviar)"))
+            return
+        try:
+            self.send(text)
+        except KeyboardInterrupt:
+            print(C.dim("\n(cancelado)"))
 
     def set_provider(self, arg):
         arg = arg.lower()
@@ -924,10 +977,17 @@ class App:
             except KeyboardInterrupt:
                 print(C.dim("\n(Ctrl-C; usa /quit para salir)"))
                 continue
+            # Si quedaron mas lineas ya disponibles (pegado multilinea),
+            # se juntan en un solo mensaje en vez de enviarse por separado.
+            while stdin_pending(0.05):
+                try:
+                    line += "\n" + input()
+                except EOFError:
+                    break
             line = line.strip()
             if not line:
                 continue
-            if line.startswith("/"):
+            if line.startswith("/") and "\n" not in line:
                 if not self.cmd(line):
                     break
             else:

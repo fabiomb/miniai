@@ -72,8 +72,9 @@ Las claves guardadas van a `~/.config/miniai/config.json` (con permisos 600).
 python3 miniai.py     # o simplemente: miniai
 ```
 
-Escribís texto normal para hablar con el modelo. Las líneas que empiezan con `/`
-son comandos:
+Escribís texto normal para hablar con el modelo. Si pegás un texto de varias
+líneas, se detecta y se envía como **un solo mensaje** (también podés usar
+`/paste` para componerlo a mano). Las líneas que empiezan con `/` son comandos:
 
 ```
 /new [titulo]        crear un chat nuevo
@@ -84,6 +85,7 @@ son comandos:
 /clear               vaciar los mensajes del chat actual
 /trim <n>            conservar solo los últimos n mensajes
 /system [texto]      ver o fijar el prompt de sistema del chat
+/paste               escribir/pegar un mensaje multilínea (termina con . sola)
 /provider <nombre>   cambiar proveedor: claude | openai | gemini
 /model [nombre]      ver o cambiar el modelo del chat actual
 /max <n>             fijar max_tokens de respuesta
