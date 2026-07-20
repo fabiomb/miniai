@@ -24,6 +24,7 @@ import urllib.error
 # ----------------------------------------------------------------------------
 
 APP = "miniai"
+VERSION = "0.5"
 
 def _xdg(env, default):
     base = os.environ.get(env)
@@ -153,6 +154,13 @@ def context_limit(model):
 
 def fmt(n):
     return "{:,}".format(int(n)).replace(",", ".")
+
+def parse_version(s):
+    """'0.3' -> (0, 3); None si no se puede interpretar."""
+    try:
+        return tuple(int(x) for x in s.strip().split("."))
+    except (ValueError, AttributeError):
+        return None
 
 def stdin_pending(wait):
     """True si ya hay mas entrada esperando en stdin.
@@ -526,7 +534,7 @@ LOGO = r"""
 |_|  |_|_|_| |_|_/_/   \_\___|
 """.strip("\n")
 
-BANNER = "miniai - Claude / ChatGPT / Gemini en tu terminal"
+BANNER = "miniai v%s - Claude / ChatGPT / Gemini en tu terminal" % VERSION
 
 def clear_screen():
     """Limpia la terminal (solo si es interactiva)."""
@@ -996,10 +1004,24 @@ class App:
             err("No puedo leer el script actual (%s): %s" % (dest, e))
             return
         if new == cur:
-            print(C.green("Ya estas en la ultima version."))
+            print(C.green("Ya estas en la ultima version (v%s)." % VERSION))
             return
-        print("  Script actual: %s (%s bytes)" % (dest, fmt(len(cur))))
-        print("  Descargado   : %s bytes" % fmt(len(new)))
+        # compara el numero de version del script remoto con el local
+        m = re.search(r'^VERSION\s*=\s*"([^"]+)"', src, re.M)
+        remote_v = m.group(1) if m else None
+        lv, rv = parse_version(VERSION), parse_version(remote_v)
+        if lv and rv:
+            if rv > lv:
+                print(C.green("Nueva version disponible: v%s (tenes v%s)." % (remote_v, VERSION)))
+            elif rv == lv:
+                warn("La version publicada es la misma (v%s) pero el contenido difiere." % remote_v)
+            else:
+                warn("La version publicada (v%s) es MAS VIEJA que la tuya (v%s); "
+                     "seguir seria volver atras." % (remote_v, VERSION))
+        else:
+            warn("No pude determinar la version publicada; comparo solo el contenido.")
+        print("  Script actual: %s (v%s, %s bytes)" % (dest, VERSION, fmt(len(cur))))
+        print("  Descargado   : v%s, %s bytes" % (remote_v or "?", fmt(len(new))))
         try:
             ans = input("Pisar el archivo actual? (queda copia .bak) [s/N] ")
         except EOFError:
