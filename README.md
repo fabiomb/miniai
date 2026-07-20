@@ -93,6 +93,7 @@ líneas, se detecta y se envía como **un solo mensaje** (también podés usar
 /status              consumo y tamaño del contexto del chat actual
 /keys                estado de las claves API
 /setkey <prov> <k>   guardar una clave API
+/update              descargar la última versión del script desde GitHub
 /help                ayuda
 /quit                salir
 ```

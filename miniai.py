@@ -36,6 +36,10 @@ DATA_DIR = _xdg("XDG_DATA_HOME", ".local/share")
 CHATS_DIR = os.path.join(DATA_DIR, "chats")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "config.json")
 
+# URL de la ultima version del script para /update (raw de GitHub).
+# Se puede pisar con "update_url" en config.json.
+UPDATE_URL = "https://raw.githubusercontent.com/fabiomb/miniai/main/miniai.py"
+
 # Modelos por defecto (editables en config.json o con /model).
 DEFAULT_MODELS = {
     "claude": "claude-sonnet-5",
@@ -546,6 +550,7 @@ HELP = """Comandos:
   /status              consumo y tamano del contexto del chat actual
   /keys                estado de las claves API
   /setkey <prov> <k>   guardar una clave API en la config
+  /update              descargar la ultima version del script desde GitHub
   /help                esta ayuda
   /quit                salir
 
@@ -742,6 +747,8 @@ class App:
             self.show_keys()
         elif name == "setkey":
             self.set_key(arg)
+        elif name == "update":
+            self.update_self()
         else:
             err("Comando desconocido: /%s  (usa /help)" % name)
         return True
@@ -947,6 +954,76 @@ class App:
         except OSError:
             pass
         print(C.green("Clave de %s guardada." % PROVIDER_LABEL[prov]))
+
+    def update_self(self):
+        """Descarga la ultima version del script y reemplaza el archivo actual.
+        Valida la descarga antes de tocar nada y deja copia .bak del anterior."""
+        url = self.cfg.get("update_url") or UPDATE_URL
+        dest = os.path.realpath(os.path.abspath(__file__))
+        print(C.dim("Descargando: %s" % url))
+        req = urllib.request.Request(url, headers={"User-Agent": APP})
+        try:
+            with urllib.request.urlopen(req, timeout=self.cfg["timeout"]) as resp:
+                new = resp.read()
+        except urllib.error.HTTPError as e:
+            err("HTTP %s al descargar la actualizacion." % e.code)
+            return
+        except urllib.error.URLError as e:
+            err("Red: %s" % e.reason)
+            return
+        except TimeoutError:
+            err("Tiempo de espera agotado.")
+            return
+        # validaciones: que sea texto, que parezca miniai y que compile
+        try:
+            src = new.decode("utf-8")
+        except UnicodeDecodeError:
+            err("La descarga no es un archivo de texto valido; no toco nada.")
+            return
+        if APP not in src:
+            err("La descarga no parece ser %s; no toco nada." % APP)
+            return
+        try:
+            compile(src, dest, "exec")
+        except SyntaxError as e:
+            err("El archivo descargado tiene un error de sintaxis (linea %s); no toco nada."
+                % e.lineno)
+            return
+        try:
+            with open(dest, "rb") as f:
+                cur = f.read()
+        except OSError as e:
+            err("No puedo leer el script actual (%s): %s" % (dest, e))
+            return
+        if new == cur:
+            print(C.green("Ya estas en la ultima version."))
+            return
+        print("  Script actual: %s (%s bytes)" % (dest, fmt(len(cur))))
+        print("  Descargado   : %s bytes" % fmt(len(new)))
+        try:
+            ans = input("Pisar el archivo actual? (queda copia .bak) [s/N] ")
+        except EOFError:
+            ans = ""
+        if ans.strip().lower() not in ("s", "si", "y", "yes"):
+            print(C.dim("(cancelado)"))
+            return
+        bak = dest + ".bak"
+        try:
+            with open(bak, "wb") as f:
+                f.write(cur)
+            tmp = dest + ".upd"
+            with open(tmp, "wb") as f:
+                f.write(new)
+            try:
+                os.chmod(tmp, os.stat(dest).st_mode)  # conserva el +x en Linux
+            except OSError:
+                pass
+            os.replace(tmp, dest)
+        except OSError as e:
+            err("No se pudo actualizar: %s" % e)
+            return
+        print(C.green("Actualizado.") + C.dim("  (copia anterior en %s)" % bak))
+        print(C.dim("Sali y volve a entrar para usar la nueva version."))
 
     # --- bucle principal ---------------------------------------------------
 
