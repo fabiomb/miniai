@@ -514,7 +514,20 @@ PROVIDER_LABEL = {"claude": "Claude", "openai": "ChatGPT", "gemini": "Gemini"}
 # Aplicacion / REPL
 # ----------------------------------------------------------------------------
 
+LOGO = r"""
+ __  __ _       _    _    ___
+|  \/  (_)_ __ (_)  / \  |_ _|
+| |\/| | | '_ \| | / _ \  | |
+| |  | | | | | | |/ ___ \ | |
+|_|  |_|_|_| |_|_/_/   \_\___|
+""".strip("\n")
+
 BANNER = "miniai - Claude / ChatGPT / Gemini en tu terminal"
+
+def clear_screen():
+    """Limpia la terminal (solo si es interactiva)."""
+    if sys.stdout.isatty():
+        os.system("cls" if os.name == "nt" else "clear")
 
 HELP = """Comandos:
   /new [titulo]        crear un chat nuevo
@@ -951,6 +964,8 @@ class App:
         except ImportError:
             pass
 
+        clear_screen()
+        print(C.cyan(LOGO))
         print(C.bold(C.cyan(BANNER)))
         print(C.dim("Escribe /help para ver los comandos. Ctrl-D o /quit para salir."))
 
