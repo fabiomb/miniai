@@ -14,6 +14,7 @@ Compatible con Python 3.9+.
 import json
 import os
 import re
+import shutil
 import sys
 import time
 import urllib.request
@@ -24,7 +25,7 @@ import urllib.error
 # ----------------------------------------------------------------------------
 
 APP = "miniai"
-VERSION = "0.5"
+VERSION = "0.6"
 
 def _xdg(env, default):
     base = os.environ.get(env)
@@ -154,6 +155,178 @@ def context_limit(model):
 
 def fmt(n):
     return "{:,}".format(int(n)).replace(",", ".")
+
+# ----------------------------------------------------------------------------
+# Presentacion: marco, sangria y ajuste de linea
+# ----------------------------------------------------------------------------
+
+MIN_WIDTH = 40
+MAX_WIDTH = 100
+INDENT = "  "
+
+def term_width():
+    """Ancho util de la terminal, acotado para que el texto siga siendo legible."""
+    try:
+        w = shutil.get_terminal_size().columns
+    except (OSError, ValueError):
+        w = 80
+    return max(MIN_WIDTH, min(MAX_WIDTH, w - 1))
+
+def _unicode_ok():
+    """True si la consola puede mostrar los caracteres de dibujo de cajas.
+    Las consolas viejas (Linux en modo texto, cmd con cp850) no pueden."""
+    enc = sys.stdout.encoding or ""
+    if "utf" in enc.lower():
+        return True
+    try:
+        "─│╭·".encode(enc or "ascii")
+        return True
+    except (UnicodeEncodeError, LookupError, TypeError):
+        return False
+
+_UNI = _unicode_ok()
+H = "─" if _UNI else "-"          # linea horizontal
+V = "│" if _UNI else "|"          # linea vertical
+TL = "╭" if _UNI else "+"         # esquinas
+TR = "╮" if _UNI else "+"
+BL = "╰" if _UNI else "+"
+BR = "╯" if _UNI else "+"
+DOT = "·" if _UNI else "-"        # separador entre datos
+ELLIPSIS = "…" if _UNI else "..."
+BAR_F = "█" if _UNI else "#"      # barra de uso de contexto
+BAR_E = "░" if _UNI else "-"
+
+ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+def vlen(s):
+    """Largo visible de una cadena, sin contar los codigos de color."""
+    return len(ANSI_RE.sub("", s))
+
+def _fit(s, width):
+    """Lleva una linea (con o sin color) al ancho exacto pedido."""
+    n = vlen(s)
+    if n <= width:
+        return s + " " * (width - n)
+    plain = ANSI_RE.sub("", s)
+    return plain[:max(0, width - len(ELLIPSIS))] + ELLIPSIS
+
+def box(lines, title=None, color=None):
+    """Caja del ancho de la terminal. Las lineas pueden traer color."""
+    w = term_width()
+    inner = w - 4
+    paint = color or (lambda s: s)
+    if title:
+        t = " %s " % title
+        top = TL + H + t + H * max(0, w - 3 - vlen(t)) + TR
+    else:
+        top = TL + H * (w - 2) + TR
+    out = [paint(top)]
+    for l in lines:
+        out.append("%s %s %s" % (paint(V), _fit(l, inner), paint(V)))
+    out.append(paint(BL + H * (w - 2) + BR))
+    return "\n".join(out)
+
+def rule(label, color=None):
+    """Separador con etiqueta: '  Claude --------------------'."""
+    paint = color or (lambda s: s)
+    text = "%s " % label
+    fill = max(3, term_width() - len(INDENT) - vlen(text) - 1)
+    return INDENT + paint(text) + C.dim(H * fill)
+
+
+class LiveWrap:
+    """Imprime texto que llega de a trozos, con sangria y ajuste al ancho.
+
+    Respeta los saltos de linea del original, conserva la sangria de cada linea
+    (listas, codigo) y no reacomoda lo que esta dentro de un bloque ```."""
+
+    def __init__(self, width=None, indent=INDENT):
+        self.indent = indent
+        self.avail = max(20, (width or term_width()) - len(indent))
+        self.col = 0        # columnas escritas en la linea visual actual
+        self.word = ""      # palabra en construccion
+        self.space = False  # hay un espacio pendiente entre palabras
+        self.bol = True     # estamos al comienzo de una linea visual
+        self.lead = True    # seguimos en la sangria inicial de la linea logica
+        self.fence = False  # dentro de un bloque de codigo ```
+        self.line = ""      # linea logica actual (para detectar el ```)
+        self.hang = ""      # sangria de la linea logica (viñetas, listas)
+        self.hang_on = False
+
+    def _put(self, s):
+        if self.bol:
+            sys.stdout.write(self.indent)
+            if self.hang_on:
+                sys.stdout.write(self.hang)  # continuacion colgada de la viñeta
+                self.hang_on = False
+            self.bol = False
+        sys.stdout.write(s)
+        self.col += len(s)
+        self.line += s
+
+    def _wrap(self):
+        """Corte por ancho; no existe en el texto original."""
+        sys.stdout.write("\n")
+        # la continuacion arranca alineada con la sangria de la linea logica,
+        # siempre que no se coma media pantalla
+        keep = self.hang if len(self.hang) < self.avail // 2 else ""
+        self.hang_on = bool(keep)
+        self.col = len(keep)
+        self.bol = True
+        self.space = False
+
+    def _newline(self):
+        """Salto de linea real del texto."""
+        sys.stdout.write("\n")
+        if self.line.strip().startswith("```"):
+            self.fence = not self.fence
+        self.col = 0
+        self.bol = True
+        self.lead = True
+        self.space = False
+        self.line = ""
+        self.hang = ""
+        self.hang_on = False
+
+    def _flush_word(self):
+        if not self.word:
+            return
+        w, self.word = self.word, ""
+        if self.col and self.col + (1 if self.space else 0) + len(w) > self.avail:
+            self._wrap()
+        elif self.space and self.col:
+            self._put(" ")
+        self.space = False
+        self._put(w)
+
+    def feed(self, text):
+        for ch in text:
+            if ch == "\n":
+                self._flush_word()
+                self._newline()
+            elif self.fence:
+                self._put(ch)
+            elif ch in " \t":
+                if self.lead:
+                    self._put(ch)      # sangria inicial: se conserva tal cual
+                    self.hang += ch
+                else:
+                    self._flush_word()
+                    self.space = True
+            else:
+                self.lead = False
+                self.word += ch
+                if len(self.word) >= self.avail:
+                    self._flush_word()  # palabra mas larga que la linea
+        sys.stdout.flush()
+
+    def close(self):
+        """Cierra la salida dejando siempre una sola linea en blanco al final."""
+        self._flush_word()
+        sys.stdout.write("\n" if self.bol else "\n\n")
+        sys.stdout.flush()
+
+# ----------------------------------------------------------------------------
 
 def parse_version(s):
     """'0.3' -> (0, 3); None si no se puede interpretar."""
@@ -534,37 +707,63 @@ LOGO = r"""
 |_|  |_|_|_| |_|_/_/   \_\___|
 """.strip("\n")
 
-BANNER = "miniai v%s - Claude / ChatGPT / Gemini en tu terminal" % VERSION
+TAGLINE = "Claude / ChatGPT / Gemini en tu terminal"
+BANNER = "miniai v%s - %s" % (VERSION, TAGLINE)
 
 def clear_screen():
     """Limpia la terminal (solo si es interactiva)."""
     if sys.stdout.isatty():
         os.system("cls" if os.name == "nt" else "clear")
 
-HELP = """Comandos:
-  /new [titulo]        crear un chat nuevo
-  /chats               listar los chats
-  /switch <n>          cambiar al chat n (numero de la lista)
-  /rename <titulo>     renombrar el chat actual
-  /delete <n>          borrar el chat n
-  /clear               vaciar los mensajes del chat actual
-  /trim <n>            conservar solo los ultimos n mensajes
-  /system [texto]      ver o fijar el prompt de sistema del chat
-  /paste               escribir/pegar un mensaje multilinea (termina con . sola)
-  /provider <nombre>   cambiar proveedor: claude | openai | gemini
-  /model [nombre]      ver o cambiar el modelo del chat actual
-  /max <n>             fijar max_tokens de respuesta
-  /stream [on|off]     activar/desactivar la respuesta en vivo (streaming)
-  /status              consumo y tamano del contexto del chat actual
-  /keys                estado de las claves API
-  /setkey <prov> <k>   guardar una clave API en la config
-  /update              descargar la ultima version del script desde GitHub
-  /help                esta ayuda
-  /quit                salir
+HELP_GROUPS = [
+    ("Chats", [
+        ("/new [titulo]", "crear un chat nuevo"),
+        ("/chats", "listar los chats"),
+        ("/switch <n>", "cambiar al chat n (numero de la lista)"),
+        ("/rename <titulo>", "renombrar el chat actual"),
+        ("/delete <n>", "borrar el chat n"),
+        ("/clear", "vaciar los mensajes del chat actual"),
+        ("/trim <n>", "conservar solo los ultimos n mensajes"),
+    ]),
+    ("Mensajes", [
+        ("/paste", "mensaje multilinea (termina con un . solo)"),
+        ("/system [texto]", "ver o fijar el prompt de sistema del chat"),
+        ("/max <n>", "fijar max_tokens de respuesta"),
+        ("/stream [on|off]", "respuesta en vivo (streaming)"),
+    ]),
+    ("Modelo", [
+        ("/provider <nombre>", "cambiar proveedor: claude | openai | gemini"),
+        ("/model [nombre]", "ver o cambiar el modelo del chat actual"),
+        ("/keys", "estado de las claves API"),
+        ("/setkey <prov> <k>", "guardar una clave API en la config"),
+    ]),
+    ("Sistema", [
+        ("/status", "consumo y tamano del contexto del chat actual"),
+        ("/update", "bajar la ultima version del script desde GitHub"),
+        ("/help", "esta ayuda"),
+        ("/quit", "salir"),
+    ]),
+]
 
-Cualquier otra linea se envia como mensaje al chat actual. Si pegas varias
-lineas de una vez, se juntan y se envian como un solo mensaje.
-Consejo: vigila /status para que la ventana de contexto no crezca de mas."""
+HELP_NOTES = [
+    "Cualquier otra linea se envia como mensaje al chat actual.",
+    "Si pegas varias lineas de una vez, se juntan en un solo mensaje.",
+    "Vigila el pie de pantalla para que el contexto no crezca de mas.",
+]
+
+def help_text():
+    """Ayuda agrupada por tema y alineada al ancho de la terminal."""
+    pad = max(len(c) for _, items in HELP_GROUPS for c, _ in items) + 2
+    out = []
+    for group, items in HELP_GROUPS:
+        out.append("")
+        out.append(rule(group, C.bold))
+        for cmd, desc in items:
+            out.append(INDENT + C.cyan(cmd.ljust(pad)) + C.dim(desc))
+    out.append("")
+    for n in HELP_NOTES:
+        out.append(INDENT + C.dim(n))
+    return "\n".join(out)
 
 
 class App:
@@ -572,6 +771,16 @@ class App:
         self.cfg = load_config()
         self.chat = None
         self._partial = ("", {"input": 0, "output": 0})
+        self._readline = False
+
+    def prompt(self):
+        """Prompt del REPL. Con readline hay que marcar los codigos de color
+        (\\001 .. \\002) para que la edicion de linea calcule bien el ancho."""
+        if not C.on:
+            return ">> "
+        if self._readline:
+            return "\001\033[34m\002>> \001\033[0m\002"
+        return "\033[34m>> \033[0m"
 
     # --- barra de estado ---------------------------------------------------
 
@@ -594,12 +803,25 @@ class App:
             color = C.yellow
         origen = "real" if real else "~est"
         ti, to = c.totals()
-        return (C.dim("[") + C.cyan("%s/%s" % (PROVIDER_LABEL.get(provider, provider), model))
-                + C.dim("] ")
-                + "msgs " + C.bold(str(len(c.messages)))
-                + C.dim(" | ") + "contexto " + color("%s tok (%s de %s)" % (fmt(shown), pct, fmt(limit)))
-                + C.dim(" %s" % origen)
-                + C.dim(" | ") + "total " + C.dim("^%s v%s" % (fmt(ti), fmt(to))))
+        parts = [
+            C.dim("[") + C.cyan("%s %s %s" % (PROVIDER_LABEL.get(provider, provider),
+                                              DOT, model)) + C.dim("]"),
+            "msgs " + C.bold(str(len(c.messages))),
+            "ctx " + color("%s (%s)" % (fmt(shown), pct)),
+            C.dim("de %s %s" % (fmt(limit), origen)),
+            C.dim("total ^%s v%s" % (fmt(ti), fmt(to))),
+        ]
+        # en terminales angostas se va soltando lo menos importante
+        sep = C.dim(" | ")
+        while len(parts) > 2 and vlen(sep.join(parts)) > term_width():
+            parts.pop()
+        return sep.join(parts)
+
+    def footer(self):
+        """Pie de pantalla, justo encima del prompt."""
+        s = self.status_line()
+        if s:
+            print(s)
 
     # --- envio de mensajes -------------------------------------------------
 
@@ -629,10 +851,13 @@ class App:
             if self.cfg.get("stream", True):
                 reply, usage = self._stream(provider, label, args)
             else:
-                print(C.dim("... consultando %s ..." % label))
+                print(C.dim(INDENT + "... consultando %s ..." % label))
                 reply, usage = PROVIDER_CALLS[provider](*args)
-                print(C.bold(C.green("\n%s:" % label)))
-                print(reply.strip() + "\n")
+                print()
+                print(rule(label, lambda s: C.bold(C.green(s))))
+                out = LiveWrap()
+                out.feed(reply.strip())
+                out.close()
         except ProviderError as e:
             c.messages.pop()  # revierte el mensaje del usuario
             err(str(e))
@@ -647,7 +872,7 @@ class App:
             if not usage.get("input"):
                 usage["input"] = c.estimated_context_tokens()
             usage["estimated"] = True
-            print(C.dim("\n(respuesta interrumpida; tokens estimados)"))
+            print(C.dim("\n" + INDENT + "(respuesta interrumpida; tokens estimados)"))
         dt = time.time() - t0
 
         if not reply.strip() and not interrupted:
@@ -665,10 +890,10 @@ class App:
         c.save()
 
         approx = "~" if usage.get("estimated") else ""
-        print(C.dim("(%s%s tok entrada, %s%s salida, %.1fs)"
-                    % (approx, fmt(usage.get("input", 0)),
-                       approx, fmt(usage.get("output", 0)), dt)))
-        print(self.status_line())
+        print(INDENT + C.dim("(%s%s tok entrada, %s%s salida, %.1fs)"
+                             % (approx, fmt(usage.get("input", 0)),
+                                approx, fmt(usage.get("output", 0)), dt)))
+        print()
 
     def _stream(self, provider, label, args):
         """Imprime la respuesta en vivo y devuelve (texto_completo, usage).
@@ -677,25 +902,24 @@ class App:
         usage = {"input": 0, "output": 0}
         chunks = []
         self._partial = ("", usage)
-        header = C.bold(C.green("%s: " % label))
-        printed_header = False
+        out = LiveWrap()
+        started = False
         try:
             for kind, val in gen:
                 if kind == "text":
-                    if not printed_header:
-                        sys.stdout.write("\n" + header)
-                        printed_header = True
+                    if not started:
+                        print()
+                        print(rule(label, lambda s: C.bold(C.green(s))))
+                        started = True
                     chunks.append(val)
-                    sys.stdout.write(val)
-                    sys.stdout.flush()
+                    out.feed(val)
                     self._partial = ("".join(chunks), usage)
                 elif kind == "usage":
                     usage = val
                     self._partial = ("".join(chunks), usage)
         finally:
-            if printed_header:
-                sys.stdout.write("\n\n")
-                sys.stdout.flush()
+            if started:
+                out.close()
         self._partial = ("".join(chunks), usage)
         return "".join(chunks), usage
 
@@ -709,7 +933,7 @@ class App:
         if name in ("quit", "q", "exit"):
             return False
         elif name in ("help", "h", "?"):
-            print(HELP)
+            print(help_text())
         elif name == "new":
             self.chat = new_chat(self.cfg["provider"],
                                  self.cfg["models"].get(self.cfg["provider"]),
@@ -770,17 +994,24 @@ class App:
     def list_chats(self):
         chats = list_chats()
         if not chats:
-            print(C.dim("(no hay chats; crea uno con /new)"))
+            print(INDENT + C.dim("(no hay chats; crea uno con /new)"))
             return
+        model_w = 18
+        # el titulo se queda con lo que sobra despues de las columnas fijas
+        title_w = max(10, term_width() - 61)
+        print()
+        print(rule("Chats %s %d" % (DOT, len(chats)), C.bold))
         for i, c in enumerate(chats, 1):
             mark = C.green("*") if (self.chat and c.id == self.chat.id) else " "
             est = c.estimated_context_tokens()
             when = time.strftime("%d/%m %H:%M", time.localtime(c.data.get("updated", 0)))
-            print("%s %2d. %s  %s  %s  %s"
-                  % (mark, i, C.bold(c.title[:36].ljust(36)),
-                     C.cyan((c.data.get("model", "?"))[:20].ljust(20)),
-                     C.dim("%d msgs, ~%s tok" % (len(c.messages), fmt(est))),
+            print("%s%s %2d. %s  %s  %s  %s"
+                  % (INDENT, mark, i,
+                     C.bold(_fit(c.title, title_w)),
+                     C.cyan(_fit(c.data.get("model", "?"), model_w)),
+                     C.dim(_fit("%d msgs ~%s tok" % (len(c.messages), fmt(est)), 18)),
                      C.dim(when)))
+        print()
 
     def _pick(self, arg):
         chats = list_chats()
@@ -798,7 +1029,6 @@ class App:
         if c:
             self.chat = c
             print(C.green("Chat activo: ") + c.title)
-            print(self.status_line())
 
     def delete(self, arg):
         c, _ = self._pick(arg)
@@ -825,7 +1055,6 @@ class App:
             del msgs[:len(msgs) - n]
             self.chat.save()
         print(C.green("Conservados %d mensajes." % len(self.chat.messages)))
-        print(self.status_line())
 
     def system_cmd(self, arg):
         if not self.require_chat():
@@ -921,23 +1150,26 @@ class App:
         est = c.estimated_context_tokens()
         real = c.last_input_tokens()
         ti, to = c.totals()
-        print(C.bold("Chat: ") + c.title + C.dim("  [%s]" % c.id))
-        print("  Proveedor : %s (%s)" % (PROVIDER_LABEL.get(c.data.get("provider")), model))
-        print("  Mensajes  : %d" % len(c.messages))
-        print("  Contexto  : ~%s tok estimados  (limite del modelo %s)"
+        print()
+        print(rule("%s %s %s" % (c.title, DOT, c.id), C.bold))
+        print(INDENT + C.dim("Proveedor : ") + "%s (%s)"
+              % (PROVIDER_LABEL.get(c.data.get("provider")), model))
+        print(INDENT + C.dim("Mensajes  : ") + "%d" % len(c.messages))
+        print(INDENT + C.dim("Contexto  : ") + "~%s tok estimados (limite del modelo %s)"
               % (fmt(est), fmt(limit)))
         if real:
-            print("  Contexto  : %s tok reales (ultima respuesta de la API)" % fmt(real))
+            print(INDENT + C.dim("Contexto  : ") + "%s tok reales (ultima respuesta)" % fmt(real))
         shown = real or est
-        bar_w = 30
+        bar_w = max(10, min(40, term_width() - 26))
         filled = min(bar_w, int(bar_w * shown / limit)) if limit else 0
-        bar = "#" * filled + "-" * (bar_w - filled)
+        bar = BAR_F * filled + BAR_E * (bar_w - filled)
         pct = (shown / limit * 100) if limit else 0
         color = C.red if pct >= self.cfg["warn_ratio"] * 100 else C.green
-        print("  Uso       : [" + color(bar) + "] %.1f%%" % pct)
-        print("  Consumo   : %s tok de entrada, %s de salida (acumulado)"
+        print(INDENT + C.dim("Uso       : ") + color(bar) + " %.1f%%" % pct)
+        print(INDENT + C.dim("Consumo   : ") + "%s tok de entrada, %s de salida"
               % (fmt(ti), fmt(to)))
-        print("  max_tokens: %d por respuesta" % self.cfg["max_tokens"])
+        print(INDENT + C.dim("max_tokens: ") + "%d por respuesta" % self.cfg["max_tokens"])
+        print()
 
     def show_keys(self):
         for p in PROVIDERS:
@@ -1060,31 +1292,43 @@ class App:
                 pass
             import atexit
             atexit.register(lambda: _save_history(readline, histfile))
+            self._readline = True
         except ImportError:
             pass
-
-        clear_screen()
-        print(C.cyan(LOGO))
-        print(C.bold(C.cyan(BANNER)))
-        print(C.dim("Escribe /help para ver los comandos. Ctrl-D o /quit para salir."))
 
         chats = list_chats()
         if chats:
             self.chat = chats[0]
-            print(C.dim("Chat activo: ") + self.chat.title)
+            primero = False
         else:
             self.chat = new_chat(self.cfg["provider"],
                                  self.cfg["models"].get(self.cfg["provider"]))
-            print(C.dim("Se creo tu primer chat."))
+            primero = True
+
+        clear_screen()
+        print(C.cyan(LOGO))
+        print()
+        prov = self.chat.data.get("provider", self.cfg["provider"])
+        print(box([
+            C.dim(TAGLINE),
+            C.cyan("%s %s %s" % (PROVIDER_LABEL.get(prov, prov), DOT,
+                                 self.chat.data.get("model", "?"))),
+            C.dim("Chat: ") + self.chat.title
+            + C.dim(" %s %d msgs" % (DOT, len(self.chat.messages))),
+        ], title="miniai v%s" % VERSION, color=C.dim))
+        print(INDENT + C.dim("/help comandos %s /paste multilinea %s /quit salir"
+                             % (DOT, DOT)))
+        if primero:
+            print(INDENT + C.dim("(se creo tu primer chat)"))
         # aviso si no hay ninguna clave configurada
         if not any(get_key(self.cfg, p) for p in PROVIDERS):
             warn("No hay claves API configuradas. Usa /setkey o define las variables de entorno.")
-        print(self.status_line())
+        print()
 
         while True:
+            self.footer()
             try:
-                prompt = C.blue(">> ")
-                line = input(prompt)
+                line = input(self.prompt())
             except EOFError:
                 print()
                 break

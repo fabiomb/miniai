@@ -6,13 +6,19 @@ terminal, pensado para máquinas viejas (probado como objetivo: **Debian 12 de
 
 - **Sin dependencias**: solo la biblioteca estándar de Python 3 (ya viene en
   Debian). No instala paquetes, no compila nada, no abre un navegador.
-- **Un solo archivo** (`miniai.py`, ~25 KB). El LLM siempre es externo (la API
+- **Un solo archivo** (`miniai.py`, ~50 KB). El LLM siempre es externo (la API
   del proveedor); en tu PC solo corre el cliente.
 - **Chats independientes**, como el cliente de Claude: creás, listás, cambiás,
   renombrás y borrás conversaciones. Cada chat es un archivo JSON.
 - **Estado de consumo y tamaño de contexto**: en cada respuesta ves los tokens
   usados, y con `/status` una barra con el % de la ventana de contexto ocupada,
   para evitar que crezca de más.
+- **Interfaz de texto consistente**: banner con marco, respuestas con sangría y
+  ajuste al ancho real de la terminal, y un pie fijo antes de cada prompt con el
+  proveedor, el modelo y el uso de contexto. Todo se adapta al ancho disponible y
+  cae a caracteres ASCII (`+-|`) si la consola no soporta Unicode. Como no usa
+  pantalla completa, **el scroll, la selección y el copiado del terminal siguen
+  funcionando** como en cualquier programa de línea de comandos.
 - **Respuesta en vivo (streaming)**: el texto se imprime a medida que llega,
   para los tres proveedores. Podés cortar la respuesta en curso con `Ctrl-C`: se
   guarda lo recibido y, si la API no alcanzó a informar el consumo, los tokens se
@@ -25,7 +31,7 @@ terminal, pensado para máquinas viejas (probado como objetivo: **Debian 12 de
 - Conexión a internet y una clave API de al menos un proveedor.
 
 Huella de recursos: el proceso usa aproximadamente **15–25 MB de RAM** y el
-código ocupa **menos de 30 KB** en disco. Nada que instalar.
+código ocupa **unos 50 KB** en disco. Nada que instalar.
 
 ## Instalación
 
@@ -100,11 +106,14 @@ líneas, se detecta y se envía como **un solo mensaje** (también podés usar
 
 ### Controlar la ventana de contexto
 
-En cada respuesta aparece una barra de estado:
+Antes de cada prompt aparece el pie de estado:
 
 ```
-[Claude/claude-sonnet-4-6] msgs 6 | contexto 3.240 tok (1.6% de 200.000) real | total ^12.400 v2.100
+[Claude · claude-sonnet-5] | msgs 6 | ctx 3.240 (1.6%) | de 200.000 real | total ^12.400 v2.100
 ```
+
+En terminales angostas el pie va soltando los datos menos importantes (primero
+el acumulado, después el límite) para no ocupar dos renglones.
 
 - `contexto` es lo que se envía al modelo. Si dice `real`, es el dato exacto que
   devolvió la API en la última respuesta; si dice `~est`, es una estimación.
